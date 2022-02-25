@@ -1,6 +1,7 @@
 from datetime import datetime
 import os
 import sqlite3
+import logging
 
 import praw
 from dotenv import load_dotenv
@@ -19,79 +20,117 @@ reddit = praw.Reddit(
     user_agent=os.environ['REDDIT_USER_AGENT'],
 )
 
-def insert_submission(source, item):
+logging.basicConfig(filename='reddit-crawler.log', filemode='a', format='%(asctime)s - %(levelname)s - %(message)s')
+
+def insert_submission(item):
     
     if not item.selftext:
         print(f"submission {item.id} skipped. Url: https://www.reddit.com{item.permalink}")
         return True
     
     try:
-        res = app_search.index_documents(
-            engine_name=os.environ['APP_SEARCH_ENGINE_NAME'],
-            documents=[{
+        
+        document = {
                 "additional_urls": f"https://www.reddit.com{item.permalink}",
                 "body_content": item.selftext,
                 "domains": ["https://www.reddit.com"],
                 "title": item.title,
                 "url": f"https://www.reddit.com{item.permalink}",
                 "url_scheme": "https",
-                "id": f'reddit-{source}-{item.id}',
+                "id": f'reddit-{item.subreddit}-{item.id}',
                 "created_at": datetime.utcfromtimestamp(item.created_utc),
-                "redditor_username": item.author.name,
-                "redditor_id": item.author.id,
                 "reddit_data_type": "submission"
-            }]
+            }
+        
+        # apparently when the user is deleted the "author" field is NoneType
+        if item.author:
+            try:
+                document["redditor_username"] = item.author.name
+                document["redditor_id"] = item.author.id
+            # Even it the author exists, sometimes the error: "AttributeError: 'Redditor' object has no attribute 'id'" happens
+            except AttributeError:
+                pass
+            
+        
+        res = app_search.index_documents(
+            engine_name=os.environ['APP_SEARCH_ENGINE_NAME'],
+            documents=[document]
         )
         print(f'submission: {res}')
+        logging.info(f'submission: {res}')
         return True
     except Exception as e:
         print(e)
+        print(f"submission.id: {item.id}")
+        print("---")
+        logging.error("Exception occurred while inserting submission", exc_info=True)
+        logging.error(f"submission.id: {item.id}")
+        logging.error(f"comment.permalink: https://www.reddit.com{item.permalink}")
+        logging.error("---")
         return False
     
-def insert_comment(source, item):
+def insert_comment(item):
     try:
         title = f"{item.author} on Reddit - {item.body[0:50]}"
     
         if (len(item.body) > 50):
             title = f"{title}..."
             
-        res = app_search.index_documents(
-            engine_name=os.environ['APP_SEARCH_ENGINE_NAME'],
-            documents=[{
+        document = {
                 "additional_urls": f"https://www.reddit.com{item.permalink}",
                 "body_content": item.body,
                 "domains": ["https://www.reddit.com"],
                 "title": title,
                 "url": f"https://www.reddit.com{item.permalink}",
                 "url_scheme": "https",
-                "id": f'reddit-{source}-{item.id}',
+                "id": f'reddit-{item.subreddit}-{item.id}',
                 "created_at": datetime.utcfromtimestamp(item.created_utc),
-                "redditor_username": item.author.name,
-                "redditor_id": item.author.id,
                 "reddit_data_type": "comment",
                 "submission_id": item.link_id
-            }]
+            }
+        
+        # apparently when the user is deleted the "author" field is NoneType
+        if item.author:
+            try:
+                document["redditor_username"] = item.author.name
+                document["redditor_id"] = item.author.id
+            # Even it the author exists, sometimes the error: "AttributeError: 'Redditor' object has no attribute 'id'" happens
+            except AttributeError:
+                pass
+            
+        res = app_search.index_documents(
+            engine_name=os.environ['APP_SEARCH_ENGINE_NAME'],
+            documents=[document]
         )
         print(f'comment: {res}')
+        logging.info(f'comment: {res}')
         return True
     except Exception as e:
         print(e)
+        print(f"comment.id: {item.id}")
+        print(f"comment.link_id: {item.link_id}")
+        print("---")
+        logging.error("Exception occurred while inserting comment", exc_info=True)
+        logging.error(f"comment.id: {item.id}")
+        logging.error(f"comment.link_id: {item.link_id}")
+        logging.error(f"comment.permalink: https://www.reddit.com{item.permalink}")
+        logging.error("---")
         return False
 
-def try_insert_item(source, item, insert_function):
+def try_insert_item(item, insert_function):
     
     attempts = 0
     inserted = False
         
     while attempts <= 10:
         attempts = attempts + 1
-        inserted = insert_function(source, item)
+        inserted = insert_function(item)
         if inserted:
             break
         
     return inserted
 
-def run_redditor(connection, redditor):
+def run_redditor(connection, redditor, allowed_channels):
     
     cursor = connection.cursor()
     row = cursor.execute(
@@ -124,10 +163,19 @@ def run_redditor(connection, redditor):
     
     for submission in reddit.redditor(redditor).submissions.new(limit=None):
         
+        subreddit_name = str(submission.subreddit)
+                    
+        if subreddit_name not in allowed_channels and "btc" not in subreddit_name.lower() and "bitcoin" not in subreddit_name.lower():
+            print(f"{redditor} submission.subreddit: {submission.subreddit} skipping")
+            logging.error(f"{redditor} submission.subreddit: {submission.subreddit} skipping")
+            continue
+        else:
+            print(f"{redditor} submission.subreddit: {submission.subreddit} process")
+        
         if submission.created_utc <= user_submission_last_date and user_submission_last_result:
             break
         
-        inserted_submission = try_insert_item(redditor, submission, insert_submission)
+        inserted_submission = try_insert_item(submission, insert_submission)
             
         if not inserted_submission:
             break
@@ -139,10 +187,19 @@ def run_redditor(connection, redditor):
         
     for comment in reddit.redditor(redditor).comments.new(limit=None):
         
+        subreddit_name = str(comment.subreddit)
+        
+        if subreddit_name not in allowed_channels and "btc" not in subreddit_name.lower() and "bitcoin" not in subreddit_name.lower():
+            print(f"{redditor} comment.subreddit: {comment.subreddit} skipping")
+            logging.error(f"{redditor} comment.subreddit: {comment.subreddit} skipping")
+            continue
+        else:
+            print(f"{redditor} comment.subreddit: {comment.subreddit} process")
+        
         if comment.created_utc <= user_comment_last_date and user_comment_last_result:
             break
         
-        inserted_comment = try_insert_item(redditor, comment, insert_comment)
+        inserted_comment = try_insert_item(comment, insert_comment)
         
         if not inserted_comment:
             break
@@ -187,11 +244,11 @@ def run_subreddit(connection, subreddit_name):
         if submission.created_utc <= subreddit_last_date and subreddit_last_result:
             break
         
-        inserted = try_insert_item(subreddit_name, submission, insert_submission)
+        inserted = try_insert_item(submission, insert_submission)
         
         submission.comments.replace_more(limit=None)
         for comment in submission.comments.list():
-            inserted = try_insert_item(subreddit_name, comment, insert_comment)
+            inserted = try_insert_item(comment, insert_comment)
             
         if not inserted:
             break
@@ -269,15 +326,23 @@ def save_user_data(cursor, data):
     cursor.close()
 
 if __name__ == "__main__":
+    logging.info('Script started.')
+    
+    subreddit_channels = ["Bitcoin", "lightningnetwork", "Electrum", "cryptography", "privacy", "TREZOR", "ledgerwallet", 
+                          "joinmarket", "Monero"]
+    
     connection = sqlite3.connect("crawler_data.sqlite")
     with connection:
         
+        # TODO 1: The ID from user's post and from reddit must have the same ID in ES. It will prevents duplicated results.
+        # TODO 2: The posts from user must have the subreddit filtered. Firstly the run_subreddit should be run and their ids
+        #         passed to run_redditor to avoid posts on other subjects
         create_user_table(connection)
         for redditor in ["statoshi", "adam3us", "belcher_", "mperklin", "luke-jr", "theymos", "GibbsSamplePlatter", 
-                         "bitusher", "RustyReddit", "-johoe", "nullc", "mperklin", "rnvk", "achow101", "killerstorm", "mperklin", "mperklin",
-                         "coblee", "maaku7", "pwuille"]:
-            run_redditor(connection, redditor)
+                         "bitusher", "RustyReddit", "-johoe", "nullc", "mperklin", "rnvk", "achow101", "killerstorm",
+                         "mperklin", "mperklin", "coblee", "maaku7", "pwuille", "renepickhardt", "fluffyponyza", "JeremyBTC"]:
+            run_redditor(connection, redditor, subreddit_channels)
             
         create_subreddit_table(connection)
-        for subreddit_name in ["Bitcoin", "lightningnetwork"]:
+        for subreddit_name in subreddit_channels:
             run_subreddit(connection, subreddit_name)
