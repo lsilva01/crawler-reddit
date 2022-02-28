@@ -333,14 +333,10 @@ if __name__ == "__main__":
     
     connection = sqlite3.connect("crawler_data.sqlite")
     with connection:
-        
-        # TODO 1: The ID from user's post and from reddit must have the same ID in ES. It will prevents duplicated results.
-        # TODO 2: The posts from user must have the subreddit filtered. Firstly the run_subreddit should be run and their ids
-        #         passed to run_redditor to avoid posts on other subjects
         create_user_table(connection)
         for redditor in ["statoshi", "adam3us", "belcher_", "mperklin", "luke-jr", "theymos", "GibbsSamplePlatter", 
-                         "bitusher", "RustyReddit", "-johoe", "nullc", "mperklin", "rnvk", "achow101", "killerstorm",
-                         "mperklin", "mperklin", "coblee", "maaku7", "pwuille", "renepickhardt", "fluffyponyza", "JeremyBTC"]:
+                         "bitusher", "RustyReddit", "-johoe", "nullc", "rnvk", "achow101", "killerstorm",
+                         "coblee", "maaku7", "pwuille", "renepickhardt", "fluffyponyza", "JeremyBTC"]:
             run_redditor(connection, redditor, subreddit_channels)
             
         create_subreddit_table(connection)
